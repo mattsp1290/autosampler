@@ -2,9 +2,10 @@
 
 Plan: autosampler-plan-ham7, gates L3 and L5. Prepared 2026-10-04.
 
-Publication approval: **PENDING**. No imported code has been pushed. The user
-must approve this audit before the first push of imported code. The release
-remains pending green CI on the exact revision to be tagged.
+Publication approval: **APPROVED** by the user on 2026-10-04 ("I approve").
+Approval covers this audit, the CI enumeration timeout fix, the empty main
+baseline, and the implementation branch pushes. The release remains pending
+green CI on the exact revision to be tagged.
 
 ## Source revision and explicit allowlist (L3)
 
@@ -214,12 +215,29 @@ license does not replace them.
 
 CI is configured for Rust 1.93.0 on ubuntu-latest (ALSA headers) and macos-latest,
 with default and serde feature sets. Device-opening tests are explicitly ignored.
+Local verification (macOS, Rust 1.93.0): default and serde builds/tests, clippy
+with warnings denied, formatting, and docs with warnings denied pass. The
+README example is a compiled doctest. The list_devices example exits 0 and
+lists three audio inputs and two ports in each MIDI direction. No physical
+instrument recording has been exercised. Packaged-crate verification passed.
+All 140 locked packages have license entries; all 15 initially committed paths
+match the intended publication allowlist. New review fixes add only the private
+callback capture helper and synthesized regression tests.
+
+Standard review artifacts are local under
+`reviews/implement-autosampler-plan-ham7-2026-10-04-111935-8e9f2e45eadd/`.
+Both independent reviewers requested changes. The canonical fixer addressed
+five Important findings and four deduplicated Suggestions. The user explicitly
+approved the one-line CI workflow timeout fix after the automatic fixer flagged
+it for manual approval; that fix has now been applied.
+Runtime stream failures and lost callback data now reject the recording before
+export. Release detection examines continuous fresh callback audio without
+observer locking. MIDI values and capability reporting are validated.
 Local verification results and review checkpoints are recorded in Beans.
 
 Pending before release:
 
-- User approval of this audit and the imported-code push.
-- Both review-gauntlet stages and their separate verified push checkpoints.
+- Completion of standard-review checkpoint, then the thermonuclear review and second verified push checkpoint.
 - Green CI on the exact revision to tag, then annotated v0.1.0 pushed and verified.
 
 No crates.io publication, default-branch merge, or change to the private source

@@ -30,6 +30,9 @@ pub enum MidiInputEvent {
 /// Errors from MIDI input operations.
 #[derive(Debug, Error)]
 pub enum MidiInputError {
+    #[error("invalid MIDI input channel: {0}; expected 0–15")]
+    InvalidChannel(u8),
+
     #[error("midir init error: {0}")]
     Init(#[from] midir::InitError),
 
@@ -77,6 +80,9 @@ impl MidiInputListener {
         filter_channel: Option<u8>,
         on_event: impl Fn(MidiInputEvent) + Send + 'static,
     ) -> Result<Self, MidiInputError> {
+        if let Some(channel) = filter_channel.filter(|&channel| channel > 15) {
+            return Err(MidiInputError::InvalidChannel(channel));
+        }
         let midi_in = MidiInput::new("autosampler-in")?;
         let ports = midi_in.ports();
         let port = ports
@@ -133,5 +139,17 @@ impl MidiInputListener {
         )?;
 
         Ok(Self { _conn: conn })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn invalid_filter_fails_before_device_access() {
+        assert!(matches!(
+            MidiInputListener::connect(usize::MAX, Some(16), |_| {}),
+            Err(MidiInputError::InvalidChannel(16))
+        ));
     }
 }

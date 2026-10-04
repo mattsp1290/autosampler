@@ -6,6 +6,7 @@
 //! [`silence_detect::detect_sample_bounds`] for trimming boundaries.
 
 pub mod audio_input;
+mod capture;
 pub mod midi_input;
 pub mod midi_output;
 pub mod recorder;

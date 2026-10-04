@@ -31,7 +31,9 @@ and falls back to a supported sample rate. It writes 16-bit PCM, 24-bit PCM, or
 `record_note_cancellable` accepts an atomic cancellation flag. Cancellation
 releases the note and saves whatever was captured. `record_preview_notes` writes
 `<NoteName>_v<velocity>.wav` paths; create the output directory first. These calls
-block the calling thread. MIDI input callbacks execute on the MIDI thread and
+block the calling thread. Runtime stream errors or lost callback buffers fail the
+recording before WAV export; continuous release silence is measured from fresh
+audio after note-off. Invalid MIDI values are rejected before sending. MIDI input callbacks execute on the MIDI thread and
 must return promptly without panicking.
 
 Silence detection returns frame bounds with a 1024-frame margin; `end_frame` is

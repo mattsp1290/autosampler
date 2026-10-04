@@ -7,9 +7,9 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct SampleBounds {
-    /// First frame above silence threshold.
+    /// Inclusive start of the retained range, including block rounding and margin.
     pub start_frame: u64,
-    /// Last frame above silence threshold.
+    /// Exclusive end of the retained range, including block rounding and margin.
     pub end_frame: u64,
     /// Total number of frames in the file.
     pub total_frames: u64,
@@ -40,6 +40,11 @@ pub fn detect_sample_bounds(
     wav_path: &Path,
     threshold_db: f64,
 ) -> Result<SampleBounds, SilenceDetectError> {
+    if !threshold_db.is_finite() {
+        return Err(SilenceDetectError::Other(
+            "silence threshold must be finite".into(),
+        ));
+    }
     let mut reader = WavReader::open(wav_path)?;
     let spec = reader.spec();
     let num_channels = spec.channels as u64;
@@ -227,6 +232,16 @@ mod tests {
         let bounds = detect_sample_bounds(&path, -60.0).unwrap();
         assert_eq!(bounds.start_frame, 0);
         assert_eq!(bounds.end_frame, 4000);
+    }
+
+    #[test]
+    fn nonfinite_threshold_is_rejected() {
+        for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                detect_sample_bounds(Path::new("does-not-exist.wav"), threshold),
+                Err(SilenceDetectError::Other(_))
+            ));
+        }
     }
 
     #[test]

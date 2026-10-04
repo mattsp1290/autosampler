@@ -25,4 +25,5 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo run --locked --example list_devices
+        timeout-minutes: 1
         if: hashFiles('examples/list_devices.rs') != ''

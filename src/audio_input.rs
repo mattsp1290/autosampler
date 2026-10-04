@@ -74,84 +74,77 @@ pub fn negotiate_stream_config(
     device: &cpal::Device,
     preferred_sample_rate: Option<u32>,
 ) -> Result<cpal::StreamConfig, HardwareAudioError> {
-    let ranges: Vec<_> = match device.supported_input_configs() {
-        Ok(iter) => iter
-            .filter(|r| r.sample_format() == cpal::SampleFormat::F32)
-            .collect(),
-        Err(_) => {
-            // Can't enumerate — fall back to the device default.
-            let default = device
-                .default_input_config()
-                .map_err(|e| HardwareAudioError::DeviceEnumeration(e.to_string()))?;
-            if default.sample_format() != cpal::SampleFormat::F32 {
-                return Err(HardwareAudioError::NoSupportedConfig);
-            }
-            return Ok(default.into());
-        }
-    };
-
-    if ranges.is_empty() {
-        // No supported configs reported — try the default.
-        let default = device
-            .default_input_config()
-            .map_err(|e| HardwareAudioError::DeviceEnumeration(e.to_string()))?;
-        if default.sample_format() != cpal::SampleFormat::F32 {
-            return Err(HardwareAudioError::NoSupportedConfig);
-        }
-        return Ok(default.into());
+    let ranges: Vec<_> = device
+        .supported_input_configs()
+        .map(|iter| iter.collect())
+        .unwrap_or_default();
+    if let Some(config) = select_stream_config(&ranges, preferred_sample_rate) {
+        return Ok(config);
     }
+    let default = device
+        .default_input_config()
+        .map_err(|e| HardwareAudioError::DeviceEnumeration(e.to_string()))?;
+    if default.sample_format() != cpal::SampleFormat::F32 || default.channels() == 0 {
+        return Err(HardwareAudioError::NoSupportedConfig);
+    }
+    Ok(default.into())
+}
 
-    // Partition into stereo and non-stereo, preferring stereo.
-    let (stereo, other): (Vec<_>, Vec<_>) = ranges.into_iter().partition(|r| r.channels() == 2);
-
-    let candidates = if !stereo.is_empty() { stereo } else { other };
-
-    // Build the list of rates to try.
-    let rates_to_try: Vec<u32> = if let Some(pref) = preferred_sample_rate {
-        // Preferred first, then fallback order (excluding duplicate).
-        let mut rates = vec![pref];
-        rates.extend(PREFERRED_RATES.iter().filter(|&&r| r != pref));
-        rates
-    } else {
-        PREFERRED_RATES.to_vec()
-    };
-
-    // Try each rate against each candidate range.
-    for &rate in &rates_to_try {
+fn select_stream_config(
+    ranges: &[cpal::SupportedStreamConfigRange],
+    preferred_sample_rate: Option<u32>,
+) -> Option<cpal::StreamConfig> {
+    let usable: Vec<_> = ranges
+        .iter()
+        .filter(|r| r.sample_format() == cpal::SampleFormat::F32 && r.channels() > 0)
+        .collect();
+    let prefer_stereo = usable.iter().any(|r| r.channels() == 2);
+    let candidates: Vec<_> = usable
+        .into_iter()
+        .filter(|r| !prefer_stereo || r.channels() == 2)
+        .collect();
+    let rates = preferred_sample_rate.into_iter().chain(PREFERRED_RATES);
+    for rate in rates {
         for range in &candidates {
-            if let Some(supported) = (*range).try_with_sample_rate(rate) {
-                let cfg: cpal::StreamConfig = supported.into();
-                tracing::debug!(
-                    sample_rate = cfg.sample_rate,
-                    channels = cfg.channels,
-                    "negotiated audio input config"
-                );
-                return Ok(cfg);
+            if let Some(config) = (**range).try_with_sample_rate(rate) {
+                return Some(config.into());
             }
         }
     }
+    candidates
+        .first()
+        .map(|range| (**range).with_max_sample_rate().into())
+}
 
-    // Last resort: use max sample rate of the first candidate.
-    if let Some(range) = candidates.into_iter().next() {
-        let cfg: cpal::StreamConfig = range.with_max_sample_rate().into();
-        tracing::debug!(
-            sample_rate = cfg.sample_rate,
-            channels = cfg.channels,
-            "negotiated audio input config (last resort max rate)"
-        );
-        return Ok(cfg);
+fn capabilities(
+    ranges: &[cpal::SupportedStreamConfigRange],
+    negotiated: &cpal::StreamConfig,
+) -> AudioDeviceConfig {
+    let supported_sample_rates = KNOWN_RATES
+        .into_iter()
+        .filter(|&rate| {
+            ranges.iter().any(|range| {
+                range.sample_format() == cpal::SampleFormat::F32
+                    && range.channels() == negotiated.channels
+                    && range.min_sample_rate() <= rate
+                    && rate <= range.max_sample_rate()
+            })
+        })
+        .collect();
+    AudioDeviceConfig {
+        supported_sample_rates,
+        channels: negotiated.channels,
+        default_sample_rate: negotiated.sample_rate,
     }
-
-    Err(HardwareAudioError::NoSupportedConfig)
 }
 
 /// Supported audio configurations for a device, suitable for display.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AudioDeviceConfig {
-    /// Sample rates the device supports (from the set of well-known rates).
+    /// Well-known rates supported with f32 samples at the preferred channel count.
     pub supported_sample_rates: Vec<u32>,
-    /// Preferred channel count (2 if stereo available, else 1).
+    /// Negotiated channel count (stereo preferred among f32 configurations).
     pub channels: u16,
     /// The rate that auto-negotiation would select.
     pub default_sample_rate: u32,
@@ -174,43 +167,51 @@ pub fn query_device_config(device_name: &str) -> Result<AudioDeviceConfig, Hardw
         .map_err(|e| HardwareAudioError::DeviceEnumeration(e.to_string()))?
         .collect();
 
-    // Collect supported sample rates from well-known set.
-    let mut supported_rates: Vec<u32> = Vec::new();
-    for &rate in &KNOWN_RATES {
-        for range in &ranges {
-            if range.min_sample_rate() <= rate && rate <= range.max_sample_rate() {
-                supported_rates.push(rate);
-                break;
-            }
-        }
-    }
-
-    // Negotiate once up front — reused for both early-return and normal paths.
     let negotiated = negotiate_stream_config(&device, None)?;
-    let default_sample_rate = negotiated.sample_rate;
-
-    if ranges.is_empty() {
-        return Ok(AudioDeviceConfig {
-            supported_sample_rates: vec![],
-            channels: negotiated.channels,
-            default_sample_rate,
-        });
-    }
-
-    // Determine channels.
-    let has_stereo = ranges.iter().any(|r| r.channels() == 2);
-    let channels = if has_stereo { 2 } else { ranges[0].channels() };
-
-    Ok(AudioDeviceConfig {
-        supported_sample_rates: supported_rates,
-        channels,
-        default_sample_rate,
-    })
+    Ok(capabilities(&ranges, &negotiated))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn range(
+        channels: u16,
+        rate: u32,
+        format: cpal::SampleFormat,
+    ) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(
+            channels,
+            rate,
+            rate,
+            cpal::SupportedBufferSize::Unknown,
+            format,
+        )
+    }
+
+    #[test]
+    fn capabilities_match_mixed_format_and_channel_negotiation() {
+        let ranges = [
+            range(2, 96000, cpal::SampleFormat::I16),
+            range(1, 48000, cpal::SampleFormat::F32),
+        ];
+        let config = select_stream_config(&ranges, Some(96000)).unwrap();
+        let caps = capabilities(&ranges, &config);
+        assert_eq!(caps.channels, 1);
+        assert_eq!(caps.default_sample_rate, 48000);
+        assert_eq!(caps.supported_sample_rates, [48000]);
+
+        let ranges = [
+            range(1, 96000, cpal::SampleFormat::F32),
+            range(2, 44100, cpal::SampleFormat::F32),
+        ];
+        let config = select_stream_config(&ranges, Some(96000)).unwrap();
+        let caps = capabilities(&ranges, &config);
+        assert_eq!(caps.channels, 2);
+        assert_eq!(caps.default_sample_rate, 44100);
+        assert_eq!(caps.supported_sample_rates, [44100]);
+        assert!(select_stream_config(&[range(2, 48000, cpal::SampleFormat::I16)], None).is_none());
+    }
 
     #[test]
     #[ignore = "requires a working audio host; enumeration can hang in headless environments"]
