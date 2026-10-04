@@ -93,45 +93,7 @@ impl MidiInputListener {
             port,
             "autosampler-midi-in",
             move |_timestamp, message, _data| {
-                if message.len() < 2 {
-                    return;
-                }
-
-                let status = message[0] & MIDI_STATUS_MASK;
-                let channel = message[0] & MIDI_CHANNEL_MASK;
-
-                // Filter by channel if requested
-                if filter_channel.is_some_and(|ch| channel != ch) {
-                    return;
-                }
-
-                let event = match status {
-                    MIDI_NOTE_ON if message.len() >= 3 && message[2] > 0 => {
-                        // Note On (velocity > 0)
-                        Some(MidiInputEvent::NoteOn {
-                            note: message[1],
-                            velocity: message[2],
-                            channel,
-                        })
-                    }
-                    MIDI_NOTE_OFF if message.len() >= 3 => {
-                        // Note Off
-                        Some(MidiInputEvent::NoteOff {
-                            note: message[1],
-                            channel,
-                        })
-                    }
-                    MIDI_NOTE_ON if message.len() >= 3 && message[2] == 0 => {
-                        // Note On with velocity 0 = Note Off
-                        Some(MidiInputEvent::NoteOff {
-                            note: message[1],
-                            channel,
-                        })
-                    }
-                    _ => None,
-                };
-
-                if let Some(evt) = event {
+                if let Some(evt) = decode_note(message, filter_channel) {
                     on_event(evt);
                 }
             },
@@ -142,9 +104,61 @@ impl MidiInputListener {
     }
 }
 
+fn decode_note(message: &[u8], filter_channel: Option<u8>) -> Option<MidiInputEvent> {
+    let &[status, note, velocity, ..] = message else {
+        return None;
+    };
+    let channel = status & MIDI_CHANNEL_MASK;
+    if note > 127 || velocity > 127 || filter_channel.is_some_and(|ch| ch != channel) {
+        return None;
+    }
+    match (status & MIDI_STATUS_MASK, velocity) {
+        (MIDI_NOTE_ON, 1..=127) => Some(MidiInputEvent::NoteOn {
+            note,
+            velocity,
+            channel,
+        }),
+        (MIDI_NOTE_ON, 0) | (MIDI_NOTE_OFF, _) => Some(MidiInputEvent::NoteOff { note, channel }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn note_decoding_covers_status_filter_and_velocity_zero() {
+        assert!(matches!(
+            decode_note(&[0x9f, 127, 127], Some(15)),
+            Some(MidiInputEvent::NoteOn {
+                note: 127,
+                velocity: 127,
+                channel: 15
+            })
+        ));
+        for message in [[0x92, 60, 0], [0x82, 60, 64]] {
+            assert!(matches!(
+                decode_note(&message, None),
+                Some(MidiInputEvent::NoteOff {
+                    note: 60,
+                    channel: 2
+                })
+            ));
+        }
+        assert!(decode_note(&[0x92, 60, 127], Some(1)).is_none());
+        for message in [
+            &[][..],
+            &[0x90][..],
+            &[0x90, 60][..],
+            &[0xb0, 60, 127][..],
+            &[0xf8, 0, 0][..],
+            &[0x90, 128, 127][..],
+            &[0x80, 60, 128][..],
+        ] {
+            assert!(decode_note(message, None).is_none(), "{message:?}");
+        }
+    }
+
     #[test]
     fn invalid_filter_fails_before_device_access() {
         assert!(matches!(

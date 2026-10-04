@@ -4,8 +4,8 @@ Plan: autosampler-plan-ham7, gates L3 and L5. Prepared 2026-10-04.
 
 Publication approval: **APPROVED** by the user on 2026-10-04 ("I approve").
 Approval covers this audit, the CI enumeration timeout fix, the empty main
-baseline, and the implementation branch pushes. The release remains pending
-green CI on the exact revision to be tagged.
+baseline, and the implementation branch pushes. Release tagging requires
+green CI on the exact tagged revision, verified through GitHub Actions.
 
 ## Source revision and explicit allowlist (L3)
 
@@ -211,7 +211,7 @@ license does not replace them.
 | winnow | 1.0.4 | MIT |
 | zmij | 1.0.23 | MIT |
 
-## Verification and remaining release gates
+## Verification and release procedure
 
 CI is configured for Rust 1.93.0 on ubuntu-latest (ALSA headers) and macos-latest,
 with default and serde feature sets. Device-opening tests are explicitly ignored.
@@ -235,10 +235,33 @@ export. Release detection examines continuous fresh callback audio without
 observer locking. MIDI values and capability reporting are validated.
 Local verification results and review checkpoints are recorded in Beans.
 
-Pending before release:
+### Review gauntlet and CI evidence
 
-- Completion of standard-review checkpoint, then the thermonuclear review and second verified push checkpoint.
-- Green CI on the exact revision to tag, then annotated v0.1.0 pushed and verified.
+Standard-review fixes were committed and pushed as
+`f35e128db211b29c459f83944884f810c1deea8c`; the remote feature branch SHA matched.
+All four Linux/macOS, default/serde jobs passed:
+https://github.com/mattsp1290/autosampler/actions/runs/37213921923
+
+Scaffold `d0140d394bcd73c25f51acb5a097d4f0ebbd07c6` also passed the complete matrix:
+https://github.com/mattsp1290/autosampler/actions/runs/37213927286
+
+The second review used the full current Cursor rubric, pinned to upstream
+`e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a` after resolving main at stage 2 start:
+https://raw.githubusercontent.com/cursor/plugins/e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md
+
+Its artifacts are local under
+`reviews/implement-autosampler-plan-ham7-thermonuclear-2026-10-04-114414-f35e128db211/`.
+The reviewer requested three structural changes, all applied through the
+canonical fixer: one audible-block iterator, one shared deadline polling
+primitive, and pure MIDI input decoding. There are no outstanding manual items.
+Public signatures and serialization shapes remain stable. Stereo/partial-block
+and protocol boundary regressions use synthesized, hardware-free tests.
+
+L3 and L5 are complete. The release procedure checks final CI on the exact
+feature HEAD, then creates an annotated v0.1.0 tag and verifies it via
+unauthenticated HTTPS ls-remote. The authoritative final commit/run/tag evidence
+is recorded in the Beans A5 issue and completion handoff, avoiding a self-referential
+commit SHA in this file.
 
 No crates.io publication, default-branch merge, or change to the private source
 repository is part of this implementation.

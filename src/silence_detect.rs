@@ -87,74 +87,37 @@ pub fn detect_sample_bounds(
     };
 
     let channels = num_channels as usize;
-    let block_size: usize = 512; // frames per analysis block
-    let margin: u64 = 1024; // frames of margin around detected bounds
+    let block_size = 512;
+    let margin = 1024;
+    let complete_samples = &samples[..total_frames as usize * channels];
+    let mut audible = complete_samples
+        .chunks(block_size * channels)
+        .enumerate()
+        .filter(|(_, block)| block_rms(block) > threshold_linear)
+        .map(|(index, block)| {
+            let start = (index * block_size) as u64;
+            (start, start + (block.len() / channels) as u64)
+        });
 
-    // Scan forward to find first non-silent block
-    // Note: total_frames as usize truncates on 32-bit platforms for files > ~24h at 48kHz.
-    // This is acceptable for sampler use cases.
-    let mut start_frame: u64 = 0;
-    let mut found_start = false;
-    for block_start in (0..total_frames as usize).step_by(block_size) {
-        let block_end = (block_start + block_size).min(total_frames as usize);
-        let rms = compute_block_rms(&samples, block_start, block_end, channels);
-        if rms > threshold_linear {
-            start_frame = block_start as u64;
-            found_start = true;
-            break;
-        }
-    }
-
-    if !found_start {
-        // Entire file is silence — return full range
+    let Some(first) = audible.next() else {
+        // Entire file is silence: retain the full range.
         return Ok(SampleBounds {
             start_frame: 0,
             end_frame: total_frames,
             total_frames,
         });
-    }
-
-    // Scan backward to find last non-silent block
-    let mut end_frame: u64 = total_frames;
-    let num_blocks = (total_frames as usize).div_ceil(block_size);
-    for i in (0..num_blocks).rev() {
-        let block_start = i * block_size;
-        let block_end = (block_start + block_size).min(total_frames as usize);
-        let rms = compute_block_rms(&samples, block_start, block_end, channels);
-        if rms > threshold_linear {
-            end_frame = block_end as u64;
-            break;
-        }
-    }
-
-    // Apply margin, clamped to file bounds
-    let start_frame = start_frame.saturating_sub(margin);
-    let end_frame = (end_frame + margin).min(total_frames);
-
+    };
+    let last = audible.next_back().unwrap_or(first);
     Ok(SampleBounds {
-        start_frame,
-        end_frame,
+        start_frame: first.0.saturating_sub(margin),
+        end_frame: (last.1 + margin).min(total_frames),
         total_frames,
     })
 }
 
-/// Compute RMS of a block of interleaved samples (frame-based).
-fn compute_block_rms(
-    samples: &[f64],
-    frame_start: usize,
-    frame_end: usize,
-    channels: usize,
-) -> f64 {
-    let sample_start = frame_start * channels;
-    let sample_end = (frame_end * channels).min(samples.len());
-    let slice = &samples[sample_start..sample_end];
-
-    if slice.is_empty() {
-        return 0.0;
-    }
-
-    let sum_sq: f64 = slice.iter().map(|&s| s * s).sum();
-    (sum_sq / slice.len() as f64).sqrt()
+fn block_rms(samples: &[f64]) -> f64 {
+    let sum_sq: f64 = samples.iter().map(|&sample| sample * sample).sum();
+    (sum_sq / samples.len() as f64).sqrt()
 }
 
 #[cfg(test)]
@@ -242,6 +205,31 @@ mod tests {
                 Err(SilenceDetectError::Other(_))
             ));
         }
+    }
+
+    #[test]
+    fn stereo_activity_and_partial_last_block_use_frame_bounds() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stereo.wav");
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: SampleFormat::Float,
+        };
+        let mut writer = WavWriter::create(&path, spec).unwrap();
+        // 10,123 frames: signal only on the right, reaching a partial final block.
+        for frame in 0..10123 {
+            writer.write_sample(0.0_f32).unwrap();
+            writer
+                .write_sample(if frame >= 9000 { 0.5_f32 } else { 0.0 })
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+        let bounds = detect_sample_bounds(&path, -60.0).unwrap();
+        assert_eq!(bounds.start_frame, 7680); // block 17 starts at 8704, minus 1024
+        assert_eq!(bounds.end_frame, 10123);
+        assert_eq!(bounds.total_frames, 10123);
     }
 
     #[test]

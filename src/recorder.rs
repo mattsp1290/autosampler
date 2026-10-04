@@ -166,7 +166,10 @@ impl HardwareRecorder {
         self.midi_sender
             .note_on(self.midi_channel, note, velocity)?;
 
-        wait_for_hold(duration, cancel, &capture);
+        wait_for(duration, || {
+            cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                || capture.check_error().is_err()
+        });
         // Release the note before capturing its tail. If sending fails,
         // dropping the stream stops capture and propagates the MIDI error.
         self.midi_sender.note_off(self.midi_channel, note)?;
@@ -214,21 +217,12 @@ impl HardwareRecorder {
         wav_path: &Path,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), HardwareRecorderError> {
-        let is_cancelled = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
-
         // Observe callback-owned statistics without locking audio storage.
-        let tail_started = Instant::now();
-        loop {
-            let remaining = tail_timeout.saturating_sub(tail_started.elapsed());
-            if is_cancelled()
-                || remaining.is_zero()
+        wait_for(tail_timeout, || {
+            cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
                 || capture.check_error().is_err()
                 || capture.release_is_silent(config.sample_rate)
-            {
-                break;
-            }
-            std::thread::sleep(remaining.min(Duration::from_millis(100)));
-        }
+        });
 
         drop(stream);
         let captured = capture.finish()?;
@@ -279,15 +273,9 @@ impl HardwareRecorder {
 // Free helpers
 // -----------------------------------------------------------------------------
 
-fn wait_for_hold(
-    duration: Duration,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    capture: &Capture,
-) {
+fn wait_for(duration: Duration, should_stop: impl Fn() -> bool) {
     let start = Instant::now();
-    while !cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-        && capture.check_error().is_ok()
-    {
+    while !should_stop() {
         let remaining = duration.saturating_sub(start.elapsed());
         if remaining.is_zero() {
             break;
